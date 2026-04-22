@@ -1,0 +1,29 @@
+/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/engineio/async_drivers/eventlet.py:1: EventletDeprecationWarning:
+Eventlet is deprecated. It is currently being maintained in bugfix mode, and
+we strongly recommend against using it for new projects.
+
+If you are already using Eventlet, we recommend migrating to a different
+framework.  For more detail see
+https://eventlet.readthedocs.io/en/latest/asyncio/migration.html
+
+  from eventlet.green.threading import Event
+ * Restarting with stat
+/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/engineio/async_drivers/eventlet.py:1: EventletDeprecationWarning:
+Eventlet is deprecated. It is currently being maintained in bugfix mode, and
+we strongly recommend against using it for new projects.
+
+If you are already using Eventlet, we recommend migrating to a different
+framework.  For more detail see
+https://eventlet.readthedocs.io/en/latest/asyncio/migration.html
+
+  from eventlet.green.threading import Event
+ * Debugger is active!
+ * Debugger PIN: 718-706-449
+(57718) wsgi starting up on http://127.0.0.1:5000
+(57718) accepted ('127.0.0.1', 34610)
+Invalid session S1eFmww7AGgH6ucXAAAC (further occurrences of this error will be logged with level INFO)
+127.0.0.1 - - [22/Apr/2026 05:36:36] "GET /socket.io/?EIO=4&transport=polling&t=PspiBUo&sid=S1eFmww7AGgH6ucXAAAC HTTP/1.1" 400 213 0.006019
+127.0.0.1 - - [22/Apr/2026 05:36:36] "POST /socket.io/?EIO=4&transport=polling&t=PspiBVN&sid=S1eFmww7AGgH6ucXAAAC HTTP/1.1" 400 265 0.001202
+127.0.0.1 - - [22/Apr/2026 05:36:37] "GET /socket.io/?EIO=4&transport=polling&t=PspiBr5&sid=4Tp7cnfkjdRf51eGAAAE HTTP/1.1" 400 213 0.000244
+127.0.0.1 - - [22/Apr/2026 05:36:37] "POST /socket.io/?EIO=4&transport=polling&t=PspiBrI&sid=4Tp7cnfkjdRf51eGAAAE HTTP/1.1" 400 265 0.001038
+127.0.0.1 - - [22/Apr/2026 05:36:38] "GET /admin HTTP/1.1" 200 1717 0.006292
