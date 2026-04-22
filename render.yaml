@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: anonvibe-chat
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --worker-class eventlet -w 1 app:app
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: anonvibe-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ADMIN_PASSWORD
+        sync: false
+    plan: free
+
+databases:
+  - name: anonvibe-db
+    plan: free

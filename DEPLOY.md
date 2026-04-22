@@ -2,29 +2,24 @@
 
 Follow these steps to deploy your professional anonymous chat honeypot.
 
-### 1. Create a PostgreSQL Database on Render
+### Option A: Automatic Deployment (Recommended)
 1. Log in to your [Render Dashboard](https://dashboard.render.com/).
-2. Click **New +** and select **PostgreSQL**.
-3. Name it `anonvibe-db` and choose a region close to you.
-4. Select the **Free** tier (or higher for production).
-5. Click **Create Database**.
-6. Once created, copy the **Internal Database URL** (for Render services) or the **External Database URL** (for local testing).
+2. Click **New +** and select **Blueprint**.
+3. Connect your GitHub repository.
+4. Render will automatically detect the `render.yaml` file and set up both the **PostgreSQL database** and the **Web Service** for you.
+5. In the "Admin Password" field, enter the password you want for the `/admin` portal.
+6. Click **Apply**.
 
-### 2. Deploy the Web Service
-1. Click **New +** and select **Web Service**.
-2. Connect your GitHub repository.
-3. **Settings:**
-   - **Name:** `anonvibe-chat`
-   - **Environment:** `Python 3`
+### Option B: Manual Deployment
+1. **Create a PostgreSQL Database:**
+   - Click **New +** -> **PostgreSQL**. Name it `anonvibe-db`.
+   - Once created, copy the **Internal Database URL**.
+2. **Deploy the Web Service:**
+   - Click **New +** -> **Web Service**. Connect your repo.
    - **Build Command:** `pip install -r requirements.txt`
-   - **Start Command:** `gunicorn --worker-class eventlet -w 1 app:app` (This matches the `Procfile` already in the repo).
-4. **Environment Variables:**
-   Click **Advanced** and add the following variables:
-   - `DATABASE_URL`: Paste your **Internal Database URL** from Step 1.
-   - `SECRET_KEY`: Enter a long random string for session security.
-   - `ADMIN_PASSWORD`: Enter the password you want to use for the `/admin` portal (default is `admin123` if not set).
-   - `PYTHON_VERSION`: `3.12.13` (Optional, but recommended).
-5. Click **Create Web Service**.
+   - **Start Command:** `gunicorn --worker-class eventlet -w 1 app:app`
+   - **Environment Variables:** Add `DATABASE_URL` (from Step 1), `SECRET_KEY` (random string), and `ADMIN_PASSWORD`.
+3. Click **Create Web Service**.
 
 ### 3. Final Verification
 1. Render will build and deploy your app. Once the status is **Live**, click the URL provided (e.g., `https://anonvibe-chat.onrender.com`).
