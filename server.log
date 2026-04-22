@@ -27,3 +27,14 @@ Invalid session S1eFmww7AGgH6ucXAAAC (further occurrences of this error will be 
 127.0.0.1 - - [22/Apr/2026 05:36:37] "GET /socket.io/?EIO=4&transport=polling&t=PspiBr5&sid=4Tp7cnfkjdRf51eGAAAE HTTP/1.1" 400 213 0.000244
 127.0.0.1 - - [22/Apr/2026 05:36:37] "POST /socket.io/?EIO=4&transport=polling&t=PspiBrI&sid=4Tp7cnfkjdRf51eGAAAE HTTP/1.1" 400 265 0.001038
 127.0.0.1 - - [22/Apr/2026 05:36:38] "GET /admin HTTP/1.1" 200 1717 0.006292
+ * Detected change in '/app/app.py', reloading
+ * Restarting with stat
+/app/app.py:1: EventletDeprecationWarning:
+Eventlet is deprecated. It is currently being maintained in bugfix mode, and
+we strongly recommend against using it for new projects.
+
+If you are already using Eventlet, we recommend migrating to a different
+framework.  For more detail see
+https://eventlet.readthedocs.io/en/latest/asyncio/migration.html
+
+  import eventlet
